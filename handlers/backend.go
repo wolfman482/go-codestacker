@@ -18,17 +18,11 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/basicauth"
-	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
 	"github.com/minio/minio-go/v7"
 	"github.com/unidoc/unipdf/v3/extractor"
 	"github.com/unidoc/unipdf/v3/model"
 	"github.com/unidoc/unipdf/v3/render"
-)
-
-var (
-	db          *sqlx.DB      = config.Db
-	minioClient *minio.Client = config.MinioClient
 )
 
 type PDF struct {
@@ -64,7 +58,7 @@ func CreateTable() {
         pdf_id INT REFERENCES pdfs(id),
         sentence TEXT NOT NULL
     );`
-	_, err := db.Exec(schema)
+	_, err := config.Db.Exec(schema)
 	if err != nil {
 		log.Fatalf("Failed to create tables: %v", err)
 	}
@@ -92,13 +86,13 @@ func UploadPDF(c *fiber.Ctx) error {
 	}
 	fileSize := fileInfo.Size()
 
-	_, err = minioClient.FPutObject(context.Background(), "pdfs", fileName, tempFilePath, minio.PutObjectOptions{ContentType: "application/pdf"})
+	_, err = config.MinioClient.FPutObject(context.Background(), "pdfs", fileName, tempFilePath, minio.PutObjectOptions{ContentType: "application/pdf"})
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to upload file to MinIO"})
 	}
 
 	var pdfID int
-	err = db.QueryRowx(`INSERT INTO pdfs (file_name, upload_time, file_size) VALUES ($1, $2, $3) RETURNING id`,
+	err = config.Db.QueryRowx(`INSERT INTO pdfs (file_name, upload_time, file_size) VALUES ($1, $2, $3) RETURNING id`,
 		fileName, uploadTime, fileSize).Scan(&pdfID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to store PDF metadata"})
@@ -111,7 +105,7 @@ func UploadPDF(c *fiber.Ctx) error {
 	}
 
 	for _, sentence := range sentences {
-		_, err = db.Exec(`INSERT INTO sentences (pdf_id, sentence) VALUES ($1, $2)`, pdfID, sentence)
+		_, err = config.Db.Exec(`INSERT INTO sentences (pdf_id, sentence) VALUES ($1, $2)`, pdfID, sentence)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to store sentences"})
 		}
@@ -121,7 +115,6 @@ func UploadPDF(c *fiber.Ctx) error {
 }
 
 func ParsePDF(filePath string) ([]string, error) {
-
 	f, err := os.Open(filePath)
 	if err != nil {
 		log.Printf("Error opening file: %v", err)
@@ -170,7 +163,7 @@ func ParsePDF(filePath string) ([]string, error) {
 
 func ListPDFs(c *fiber.Ctx) error {
 	var pdfs []PDF
-	err := db.Select(&pdfs, `SELECT id, file_name, upload_time, file_size FROM pdfs`)
+	err := config.Db.Select(&pdfs, `SELECT id, file_name, upload_time, file_size FROM pdfs`)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to list PDFs"})
 	}
@@ -181,13 +174,13 @@ func ListPDFs(c *fiber.Ctx) error {
 func GetPDF(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var pdf PDF
-	err := db.Get(&pdf, `SELECT id, file_name, upload_time, file_size FROM pdfs WHERE id = $1`, id)
+	err := config.Db.Get(&pdf, `SELECT id, file_name, upload_time, file_size FROM pdfs WHERE id = $1`, id)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "PDF not found"})
 	}
 
 	var sentences []string
-	err = db.Select(&sentences, `SELECT sentence FROM sentences WHERE pdf_id = $1`, id)
+	err = config.Db.Select(&sentences, `SELECT sentence FROM sentences WHERE pdf_id = $1`, id)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to retrieve sentences"})
 	}
@@ -210,7 +203,7 @@ func SearchWord(c *fiber.Ctx) error {
 		PDFID    int    `db:"pdf_id"`
 		Sentence string `db:"sentence"`
 	}
-	err := db.Select(&results, `SELECT pdf_id, sentence FROM sentences WHERE sentence ILIKE '%' || $1 || '%'`, keyword)
+	err := config.Db.Select(&results, `SELECT pdf_id, sentence FROM sentences WHERE sentence ILIKE '%' || $1 || '%'`, keyword)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to search sentences"})
 	}
@@ -232,13 +225,13 @@ func GetPageAsImage(c *fiber.Ctx) error {
 	}
 
 	var fileName string
-	err = db.Get(&fileName, `SELECT file_name FROM pdfs WHERE id = $1`, id)
+	err = config.Db.Get(&fileName, `SELECT file_name FROM pdfs WHERE id = $1`, id)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "PDF not found"})
 	}
 
 	tempFilePath := filepath.Join(os.TempDir(), fileName)
-	err = minioClient.FGetObject(context.Background(), "pdfs", fileName, tempFilePath, minio.GetObjectOptions{})
+	err = config.MinioClient.FGetObject(context.Background(), "pdfs", fileName, tempFilePath, minio.GetObjectOptions{})
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to download PDF from storage"})
 	}
@@ -282,22 +275,22 @@ func DeletePDF(c *fiber.Ctx) error {
 	id := c.Params("id")
 
 	var fileName string
-	err := db.Get(&fileName, `SELECT file_name FROM pdfs WHERE id = $1`, id)
+	err := config.Db.Get(&fileName, `SELECT file_name FROM pdfs WHERE id = $1`, id)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "PDF not found"})
 	}
 
-	err = minioClient.RemoveObject(context.Background(), "pdfs", fileName, minio.RemoveObjectOptions{})
+	err = config.MinioClient.RemoveObject(context.Background(), "pdfs", fileName, minio.RemoveObjectOptions{})
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to delete PDF from storage"})
 	}
 
-	_, err = db.Exec(`DELETE FROM sentences WHERE pdf_id = $1`, id)
+	_, err = config.Db.Exec(`DELETE FROM sentences WHERE pdf_id = $1`, id)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to delete sentences"})
 	}
 
-	_, err = db.Exec(`DELETE FROM pdfs WHERE id = $1`, id)
+	_, err = config.Db.Exec(`DELETE FROM pdfs WHERE id = $1`, id)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to delete PDF metadata"})
 	}
@@ -309,7 +302,7 @@ func AuthMiddleware() fiber.Handler {
 	return basicauth.New(basicauth.Config{
 		Authorizer: func(username, password string) bool {
 			var user User
-			err := db.Get(&user, "SELECT * FROM users WHERE username=$1", username)
+			err := config.Db.Get(&user, "SELECT * FROM users WHERE username=$1", username)
 			if err != nil {
 				return false
 			}
@@ -328,14 +321,14 @@ func Register(c *fiber.Ctx) error {
 	}
 
 	var count int
-	err := db.Get(&count, "SELECT COUNT(*) FROM users WHERE username=$1", user.Username)
+	err := config.Db.Get(&count, "SELECT COUNT(*) FROM users WHERE username=$1", user.Username)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "database error"})
 	}
 	if count > 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "username already taken"})
 	}
-	_, err = db.Exec("INSERT INTO users (username, password) VALUES ($1, $2)", user.Username, user.Password)
+	_, err = config.Db.Exec("INSERT INTO users (username, password) VALUES ($1, $2)", user.Username, user.Password)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "database error"})
 	}
@@ -350,7 +343,7 @@ func Login(c *fiber.Ctx) error {
 	}
 
 	var user User
-	err = db.Get(&user, "SELECT * FROM users WHERE username=$1", username)
+	err = config.Db.Get(&user, "SELECT * FROM users WHERE username=$1", username)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid credentials"})

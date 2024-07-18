@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"fiber-postgres-docker/config"
 	"fiber-postgres-docker/handlers"
@@ -18,7 +20,7 @@ import (
 )
 
 func main() {
-	licenseKey := os.Getenv("7a997b47a356b861c27b727a1093104e55eace9eb185ccab3c8a463c3e1bb842")
+	licenseKey := os.Getenv("UNIPDF_LICENSE_KEY")
 	err := license.SetMeteredKey(licenseKey)
 	if err != nil {
 		log.Fatalf("Error setting license key: %v", err)
@@ -34,14 +36,26 @@ func main() {
 	dbPassword := os.Getenv("DB_PASSWORD")
 	dbName := os.Getenv("DB_NAME")
 
-	dbURL := "postgres://" + dbUser + ":" + dbPassword + "@" + dbHost + ":5432/" + dbName + "?sslmode=disable"
-	config.Db, err = sqlx.Connect("postgres", dbURL)
-	if err != nil {
-		log.Fatalf("Failed to connect to the database: %v", err)
+	dbURL := fmt.Sprintf("postgres://%s:%s@%s:5432/%s?sslmode=disable", dbUser, dbPassword, dbHost, dbName)
+
+	var db *sqlx.DB
+	for {
+		db, err = sqlx.Connect("postgres", dbURL)
+		if err == nil {
+			break
+		}
+		log.Printf("Failed to connect to the database: %v", err)
+		time.Sleep(2 * time.Second)
 	}
 
-	config.MinioClient, err = minio.New(os.Getenv("MINIO_ENDPOINT"), &minio.Options{
-		Creds:  credentials.NewStaticV4(os.Getenv("MINIO_ROOT_USER"), os.Getenv("MINIO_ROOT_PASSWORD"), ""),
+	config.Db = db
+
+	minioEndpoint := os.Getenv("MINIO_ENDPOINT")
+	minioAccessKey := os.Getenv("MINIO_ROOT_USER")
+	minioSecretKey := os.Getenv("MINIO_ROOT_PASSWORD")
+
+	config.MinioClient, err = minio.New(minioEndpoint, &minio.Options{
+		Creds:  credentials.NewStaticV4(minioAccessKey, minioSecretKey, ""),
 		Secure: false,
 	})
 	if err != nil {
